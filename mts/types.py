@@ -22,6 +22,7 @@ NPVector3f = np.ndarray[3, np.float32]
 NPVector4f = np.ndarray[4, np.float32]
 NPVector2f = np.ndarray[2, np.float32]
 
+
 NPManyVector3f = np.ndarray[(-1, 3), np.float32]
 NPManyVector2f = np.ndarray[(-1, 2), np.float32]
 NPManyVector4f = np.ndarray[(-1, 4), np.float32]

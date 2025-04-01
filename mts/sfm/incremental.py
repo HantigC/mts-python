@@ -34,7 +34,8 @@ class IncrementalSfMConfig:
     min_init_inliers: int = field(default=50)
     min_pose_inliers: int = field(default=50)
     min_angle: float = field(default=15)
-    min_reprojection_error: float = field(default=2)
+    max_projection_error: float = field(default=2)
+    max_reprojection_error: float = field(default=1)
     max_depth: float = field(default=20)
     min_depth: float = field(default=1)
 
@@ -50,7 +51,8 @@ class IncrementalSfM:
         min_init_inliers: int = 50,
         min_pose_inliers: int = 50,
         min_angle: float = 15,
-        min_reprojection_error: float = 2,
+        max_projection_error: float = 2,
+        max_reprojection_error: float = 1,
         max_depth: float = 20,
         min_depth: float = 1,
     ) -> None:
@@ -66,7 +68,8 @@ class IncrementalSfM:
 
         self.min_init_inliers = min_init_inliers
         self.min_pose_inliers = min_pose_inliers
-        self.max_reprojection_error = min_reprojection_error
+        self.max_projection_error = max_projection_error
+        self.max_reprojection_error = max_reprojection_error
         self.min_depth = min_depth
         self.max_depth = max_depth
         self.matcher = matcher
@@ -274,7 +277,7 @@ class IncrementalSfM:
         if (
             pnp_summary is not None
             and sum(pnp_summary.mask) > self.min_pose_inliers
-            and np.mean(pnp_summary.projection_errors) < self.max_reprojection_error
+            and np.mean(pnp_summary.projection_errors) < self.max_projection_error
         ):
             pose = Rigid3D(pnp_summary.R, pnp_summary.t)
             mask = pnp_summary.mask
@@ -314,17 +317,20 @@ class IncrementalSfM:
                     posed_images.append(tracked_image)
                     points.append(tracked_image.camera_keypoints[tracklet.keypoint_num])
 
-            if len(poses) >= 2:
+            if len(poses) > 2:
                 # point_3d = linear.multi_cameras(points, poses)
                 point_3d = self.triangulate_points(points, poses, reconstructed_point)
 
-                error = self.scene_graph.projection_error_for(
+                errors = []
+                for error in self.scene_graph.projection_errors_for(
                     point_3d, reconstructed_point
-                )
-                if error > self.max_reprojection_error:
-                    continue
-                if error > reconstructed_point.error:
-                    continue
+                ):
+                    if error > self.max_reprojection_error:
+                        continue
+                    if error > reconstructed_point.error:
+                        continue
+                    errors.append(error)
+                error = np.mean(errors)
 
                 if any(
                     depth > self.max_depth or depth < self.min_depth
@@ -352,8 +358,11 @@ class IncrementalSfM:
             st_pose, nd_pose = poses[st_idx], poses[nd_idx]
             point_3d = linear.two_cameras([st_points], [nd_points], st_pose, nd_pose)
 
-            error = self.scene_graph.projection_error_for(
-                point_3d[0], reconstructed_point
+            error = np.mean(
+                self.scene_graph.projection_errors_for(
+                    point_3d[0],
+                    reconstructed_point,
+                )
             )
             if error < best_error:
                 best_point = point_3d[0]

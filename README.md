@@ -3,4 +3,4 @@ Structure From Motion - Python Implementation
 
 ## Results
 
-![](/img/pose.png)
+![](/img/poses.png)

@@ -1,6 +1,6 @@
 from plotly import graph_objects as go
 
-from util.dict import extract_kwargs
+from mts.util.dict import extract_kwargs
 
 
 def render_axes(

@@ -6,7 +6,15 @@ import numpy as np
 from mts.geometry.transform import to_camera_coord, to_world_coord_Rt
 from mts.model.rgb import RGB
 from mts.pose.rigid import Rigid3D
-from mts.types import L, NPMatrix3x3f, NPVector2f, NPVector3f, Size
+from mts.types import (
+    L,
+    NPMatrix3x3f,
+    NPVector2f,
+    NPVector3f,
+    Size,
+    NPManyVector3f,
+    NPManyVector2f,
+)
 from mts.util.np import add_col
 
 
@@ -38,14 +46,26 @@ class Image:
         r, g, b = self.img[int(y), int(x)]
         return RGB(r, g, b)
 
+    def to_camera(self, world_point: NPVector3f | NPManyVector3f) -> NPVector3f:
+        if world_point.ndim == 1:
+            world_point = world_point[np.newaxis]
+        elif world_point.ndim != 2:
+            raise ValueError(f"The passed value should be of type: {NPManyVector3f}")
+
+        camera_points = world_point @ self.pose.R.T   + self.pose.t
+        camera_points = np.squeeze(camera_points)
+        return camera_points
+
     def to_camera(self, world_point: NPVector3f) -> NPVector3f:
         camera_point = self.pose.R @ world_point + self.pose.t
         return camera_point
 
-    def project(
-        self,
-        x_3d: NPVector3f,
-    ) -> NPVector2f:
+    def project_points(self, points_3d: NPManyVector3f) -> NPManyVector2f:
+        projected_2d_h = (points_3d @ self.pose.R.T + self.pose.t) @ self.K.T
+        projected_2d = projected_2d_h[:, :2] / projected_2d_h[:, 2:]
+        return projected_2d
+
+    def project_point(self, x_3d: NPVector3f) -> NPVector2f:
         x_2d_h = self.K @ (self.pose.R @ x_3d + self.pose.t)
         x_2d = x_2d_h[:2] / x_2d_h[2]
         return x_2d

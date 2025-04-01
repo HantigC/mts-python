@@ -5,7 +5,7 @@ from typing import Dict, List, NamedTuple, Optional, Sequence
 
 import numpy as np
 
-from mts.estimator.pnp.dlt import ComputeReprojectionError
+from mts.estimator.pnp.dlt import compute_projection_error
 from mts.model.image import Image, ImageType, ImageId
 from mts.model.point import Point3D
 from mts.model.rgb import RGB
@@ -186,7 +186,7 @@ class SceneGraph:
             depths.append(tracked_image.pose.z_of(point_3d))
         return depths
 
-    def projection_error_for(
+    def projection_errors_for(
         self,
         point_3d: NPVector3f,
         reconstructed_point: ReconstructedPoint,
@@ -197,9 +197,9 @@ class SceneGraph:
             tracked_image.keypoints[tracklet.keypoint_num]
             if tracked_image.pose is None:
                 continue
-            point_2d = tracked_image.project(point_3d)
-            errors.append(ComputeReprojectionError(point_2d, tracklet.image_kp))
-        return np.mean(errors)
+            point_2d = tracked_image.project_point(point_3d)
+            errors.append(compute_projection_error(point_2d, tracklet.image_kp))
+        return errors
 
     def _add_tracks(
         self,
