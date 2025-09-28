@@ -5,7 +5,7 @@ from typing import Dict, Generic, List, Tuple
 
 import numpy as np
 
-from mts.types import NPManyVector3f, NPVector3f, Number
+from mts.types import NPManyVector3f, NPVector2f, NPVector3f, Number
 
 
 @dataclass
@@ -35,6 +35,39 @@ class Point3D(Generic[Number]):
     def as_dict(self) -> Dict[str, Number]:
         return dict(x=self.x, y=self.y, z=self.z)
 
+    def as_h_point2d(self) -> Point2D:
+        return Point2D(self.x / self.z, self.y / self.z)
+
+
+@dataclass
+class Point2D(Generic[Number]):
+    x: Number
+    y: Number
+
+    @classmethod
+    def from_numpy(cls, point_3d_np: NPVector3f) -> Point3D:
+        obj = cls(
+            point_3d_np[0],
+            point_3d_np[1],
+        )
+        return obj
+
+    def as_np(self) -> NPVector2f:
+        return np.array([self.x, self.y])
+
+    def as_tuple(self) -> Tuple[Number, Number]:
+        return (self.x, self.y)
+
+    def as_list(self) -> List[Number]:
+        return [self.x, self.y]
+
+    def as_dict(self) -> Dict[str, Number]:
+        return dict(x=self.x, y=self.y)
+
 
 def points_3f_from_np(points_3d: NPManyVector3f) -> List[Point3D]:
     return [Point3D(x, y, z) for x, y, z in points_3d]
+
+
+Point3Df = Point3D[float]
+Point2Df = Point2D[float]
