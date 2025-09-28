@@ -1,0 +1,12 @@
+[project]
+name = "dl"
+version = "0.0.1"
+authors = [
+  { name="HSC" },
+]
+description = "Deep Leaning models"
+readme = "README.md"
+requires-python = ">=3.7"
+
+[tool.black]
+line-length = 90
