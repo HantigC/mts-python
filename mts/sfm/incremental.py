@@ -1,23 +1,25 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+
 import logging
-import random
+from dataclasses import dataclass, field
+from math import sqrt
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
+from tqdm.auto import tqdm
 
 from mts.estimator.pnp.dlt import LinearPNPRansac
 from mts.geometry.triangulation import linear
 from mts.keypoint.base import BaseMatcher
 from mts.model.image import Image, ImageId, ImageType
-from mts.model.point import Point3D
+from mts.model.point import Point3D, Point3Df
 from mts.model.rgb import RGB
 from mts.model.two_view import PairId, TwoViewPair, compute_two_view
-from mts.pose.rigid import Rigid3D
+from mts.pose.rigid import Rigid3D, gn_pnp
 from mts.sfm.reconstruction import Reconstruction
 from mts.sfm.scene_graph import SceneGraph, View3DPair
-from mts.types import NPVector3f
+from mts.types import NPVector2f, NPVector3f
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +29,67 @@ StartingPairType = Union[
     Tuple[ImageType, ImageType],
     PairId,
 ]
+
+
+def compute_projection_error(
+    pose: Rigid3D, world_point: NPVector3f, point: NPVector2f
+) -> float:
+    camera_point = pose * world_point
+    projected_point = np.array(
+        [
+            camera_point[0] / camera_point[2],
+            camera_point[1] / camera_point[2],
+        ]
+    )
+    return np.sum((projected_point - point) ** 2)
+
+
+def compute(
+    poses: List[Rigid3D],
+    world_point: NPVector3f,
+    points: List[NPVector2f],
+):
+
+    total_gradient = np.zeros(3)
+    projection_errors = []
+    for pose, (x, y) in zip(poses, points):
+        camera_point = Point3Df.from_numpy(pose * world_point)
+        projected_point = camera_point.as_h_point2d()
+        squared_z = camera_point.z**2
+        ex = projected_point.x - x
+        ey = projected_point.y - y
+        projection_errors.append(sqrt(ex**2 + ey**2))
+
+        x_gradient = (
+            ex * (pose.xaxis * camera_point.z - camera_point.x * pose.zaxis) / squared_z
+        )
+        y_gradient = (
+            ey * (pose.yaxis * camera_point.z - camera_point.y * pose.zaxis) / squared_z
+        )
+        total_gradient += x_gradient + y_gradient
+
+    return total_gradient, projection_errors
+
+
+def non_linear(
+    poses: List[Rigid3D],
+    world_point: NPVector3f,
+    points: List[NPVector2f],
+    scaler: float = 0.001,
+    epsilon: float = 0.001,
+    max_iteration: int = 10,
+) -> NPVector3f:
+    iteration = 0
+    world_point_hat = world_point
+    projection_error = 10
+    poses = np.stack(poses)
+    points = np.stack(points)
+    while iteration < max_iteration and projection_error > epsilon:
+        iteration += 1
+        gradient, projection_errors = compute(poses, world_point_hat, points)
+        world_point_hat -= scaler * gradient
+        projection_error = np.mean(projection_errors)
+    return world_point_hat
 
 
 @dataclass
@@ -107,6 +170,25 @@ class IncrementalSfM:
 
     def _check_depth_interval(self, pose: Rigid3D, point3d: NPVector3f) -> bool:
         return self.min_depth <= pose.z_of(point3d) <= self.max_depth
+
+    def _refine_points_3d(self, two_view_pair: TwoViewPair) -> None:
+
+        new_points = []
+        for world_point, st_image_point, nd_image_point in zip(
+            tqdm(two_view_pair.points3D, desc="Refine initial 3D points"),
+            two_view_pair.st_keypoints_camera,
+            two_view_pair.nd_keypoints_camera,
+        ):
+            new_point = non_linear(
+                [two_view_pair.st_image.pose, two_view_pair.nd_image.pose],
+                world_point,
+                [st_image_point[:2], nd_image_point[:2]],
+                max_iteration=500,
+            )
+
+            new_points.append(new_point)
+
+        two_view_pair.points3D = np.stack(new_points)
 
     def init_3d_points(self, two_view_pair: TwoViewPair) -> None:
 
@@ -318,8 +400,9 @@ class IncrementalSfM:
                     points.append(tracked_image.camera_keypoints[tracklet.keypoint_num])
 
             if len(poses) > 2:
-                # point_3d = linear.multi_cameras(points, poses)
-                point_3d = self.triangulate_points(points, poses, reconstructed_point)
+                point_3d = linear.multi_cameras(points, poses)
+                # non_linear()
+                # point_3d = self.triangulate_points(points, poses, reconstructed_point)
 
                 errors = []
                 for error in self.scene_graph.projection_errors_for(
@@ -394,7 +477,38 @@ class IncrementalSfM:
                 best_image = next_image
                 best_visible_points = visible_points[mask]
                 best_pose = pose
+
         return best_image, best_pose, best_visible_points
+
+    def _refine_non_linear(self, reconstruction: Reconstruction):
+        LOGGER.info("refine the poses")
+        for image in reconstruction.images:
+            world_points, image_points = self.scene_graph.visible_pair_for(
+                image, in_camera=False
+            )
+            if image.pose is None:
+                continue
+            pose = gn_pnp(
+                image.K,
+                image.pose,
+                image_points,
+                world_points,
+                iterations=1000,
+            )
+            image.pose = pose
+
+        LOGGER.info("refine the point")
+        for reconstructed_point in reconstruction.points.values():
+            new_point = non_linear(
+                reconstructed_point.poses(),
+                reconstructed_point.loc.as_np(),
+                reconstructed_point.kp_camera(),
+                scaler=0.002,
+                max_iteration=100,
+            )
+            reconstructed_point.loc.x = new_point[0]
+            reconstructed_point.loc.y = new_point[1]
+            reconstructed_point.loc.z = new_point[2]
 
     def build(
         self,
@@ -428,6 +542,11 @@ class IncrementalSfM:
                 next_best_pose,
                 self.reconstructions[-1],
             )
+
+            LOGGER.info(
+                "Refine triangulation using non-linear triangulation",
+            )
+            self._refine_non_linear(self.reconstructions[-1])
 
     @classmethod
     def from_config(

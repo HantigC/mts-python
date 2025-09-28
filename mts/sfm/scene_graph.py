@@ -1,36 +1,24 @@
+from __future__ import annotations
+
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-import logging
 from typing import Dict, List, NamedTuple, Optional, Sequence
 
 import numpy as np
 
 from mts.estimator.pnp.dlt import compute_projection_error
-from mts.model.image import Image, ImageType, ImageId
-from mts.model.point import Point3D
-from mts.model.rgb import RGB
-from mts.pose.rigid import compute_depth_mask
+from mts.model.image import Image, ImageId, ImageType
 from mts.model.track import (
     InvTrack,
     KeypointInvTrack,
-    KeypointTrack,
     TrackLocation,
-    intersect_tracks,
 )
-from mts.model.two_view import TwoViewPair, image_ids_to_pair_id, PairId
-from mts.types import Id, NPVector3f
-
+from mts.model.two_view import PairId, TwoViewPair, image_ids_to_pair_id
+from mts.sfm.reconstruction import ReconstructedPoint
+from mts.types import NPVector3f
 
 LOGGER = logging.getLogger("SfM")
-
-
-@dataclass
-class ReconstructedPoint:
-    id: Id = field(default=None)
-    loc: Point3D = field(default=None)
-    color: RGB = field(default=None)
-    track: KeypointTrack = field(default=None)
-    error: float = field(default=np.inf)
 
 
 class View3DPair(NamedTuple):
@@ -117,9 +105,7 @@ class SceneGraph:
         image_id = self._extract_image_id(image_id)
         return self.pairs_map[image_id]
 
-    def add_two_view_pair(
-        self, two_view_pair: TwoViewPair, strict: bool = True
-    ) -> None:
+    def add_two_view_pair(self, two_view_pair: TwoViewPair, strict: bool = True) -> None:
         if two_view_pair.pair_id in self.pairs and strict:
             raise ValueError(
                 f"pair id `{two_view_pair.pair_id}` already exists in the scene graph"
@@ -135,17 +121,6 @@ class SceneGraph:
                 f"image id `{image.image}` already exists in the scene graph"
             )
         self.images[image] = image
-
-    def visible_points_for(self, images: List[ImageId]):
-        images = [self._get_image(image) for image in images]
-        images = sorted(images, key=len(self.keypoint_invtracks[st_image.image_id]))
-
-        st_image = self._get_image(image[0])
-
-        inv_tracks = self.keypoint_invtracks[st_image.image_id]
-        for image in images[1:]:
-            intersect_tracks(inv_tracks, self.keypoint_invtracks[image.image_id])
-        # TODO: implement a method that extracts reconstructed points for inv tracks
 
     def visible_pair_for(
         self, image: ImageId | Image, in_camera: bool = True
@@ -261,6 +236,7 @@ class SceneGraph:
                 TrackLocation(st_image, st_match),
                 TrackLocation(nd_image, nd_match),
             ],
+            scene_graph=self,
         )
         self.points[self._last_track_id] = reconstructed_point
         st_kp_mask[st_match] = InvTrack(self._last_track_id, 0)

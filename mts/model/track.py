@@ -13,6 +13,13 @@ class TrackLocation(NamedTuple):
     def image_kp(self):
         return self.image.keypoints[self.keypoint_num]
 
+    @property
+    def camera_kp(self):
+        return self.image.camera_keypoints[self.keypoint_num]
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(image={self.image.image_id}, keypoint_num={self.keypoint_num},)"
+
 
 @dataclass
 class PointTrack:

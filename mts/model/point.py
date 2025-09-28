@@ -5,7 +5,7 @@ from typing import Dict, Generic, List, Tuple
 
 import numpy as np
 
-from mts.types import NPManyVector3f, NPVector2f, NPVector3f, Number
+from mts.types import NPManyVector3f, NPMatrix3x3f, NPVector2f, NPVector3f, Number
 
 
 @dataclass
