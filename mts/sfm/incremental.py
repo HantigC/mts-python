@@ -7,7 +7,7 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from mts.estimator.pnp.dlt import LinearPNPRansac
 from mts.geometry.triangulation import linear
@@ -16,10 +16,14 @@ from mts.model.image import Image, ImageId, ImageType
 from mts.model.point import Point3D, Point3Df
 from mts.model.rgb import RGB
 from mts.model.two_view import PairId, TwoViewPair, compute_two_view
-from mts.pose.rigid import Rigid3D, gn_pnp
+from mts.optim.jr.point import PointParam
+from mts.optim.jr.rigid import PoseParam
+from mts.optim.nonlinear.rigid import gn_pose
+from mts.pose.rigid import Rigid3D
 from mts.sfm.reconstruction import Reconstruction
-from mts.sfm.scene_graph import SceneGraph, View3DPair
+from mts.sfm.scene_graph import ReconstructedPoint, SceneGraph, View3DPair
 from mts.types import NPVector2f, NPVector3f
+from mts.optim.nonlinear.point import gn_point
 
 LOGGER = logging.getLogger(__name__)
 
@@ -136,7 +140,7 @@ class IncrementalSfM:
         self.min_depth = min_depth
         self.max_depth = max_depth
         self.matcher = matcher
-        self.reconstructions = []
+        self.reconstructions: Reconstruction = []
 
     def _compute_scene_graph(self):
         self.scene_graph = SceneGraph(self.images_map)
@@ -171,26 +175,7 @@ class IncrementalSfM:
     def _check_depth_interval(self, pose: Rigid3D, point3d: NPVector3f) -> bool:
         return self.min_depth <= pose.z_of(point3d) <= self.max_depth
 
-    def _refine_points_3d(self, two_view_pair: TwoViewPair) -> None:
-
-        new_points = []
-        for world_point, st_image_point, nd_image_point in zip(
-            tqdm(two_view_pair.points3D, desc="Refine initial 3D points"),
-            two_view_pair.st_keypoints_camera,
-            two_view_pair.nd_keypoints_camera,
-        ):
-            new_point = non_linear(
-                [two_view_pair.st_image.pose, two_view_pair.nd_image.pose],
-                world_point,
-                [st_image_point[:2], nd_image_point[:2]],
-                max_iteration=500,
-            )
-
-            new_points.append(new_point)
-
-        two_view_pair.points3D = np.stack(new_points)
-
-    def init_3d_points(self, two_view_pair: TwoViewPair) -> None:
+    def init_3d_points(self, two_view_pair: TwoViewPair) -> list[ReconstructedPoint]:
 
         st_image = two_view_pair.st_image
         nd_image = two_view_pair.nd_image
@@ -227,20 +212,18 @@ class IncrementalSfM:
             )
 
             points[st_track_idx] = self.scene_graph.points[st_track_idx]
-        return points
+        return list(points.values())
 
     def _start_from_pair(self, pair: TwoViewPair) -> None:
         self.scene_graph.images[pair.st_image.image_id].pose = Rigid3D.from_identity()
         self.scene_graph.images[pair.nd_image.image_id].pose = pair.relative_pose
         initial_3d_points = self.init_3d_points(pair)
 
-        reconstruction = Reconstruction(
-            images=[
-                pair.st_image,
-                pair.nd_image,
-            ],
-            points=initial_3d_points,
-        )
+        reconstruction = Reconstruction(self.scene_graph)
+        reconstruction.add_image(pair.st_image)
+        reconstruction.add_image(pair.nd_image)
+        reconstruction.add_points(initial_3d_points)
+
         LOGGER.info(
             "Starting from pair: (%d, %d) with angle (%f)",
             pair.st_image.image_id,
@@ -427,7 +410,7 @@ class IncrementalSfM:
                 reconstructed_point.error = error
                 reconstructed_point.color = RGB(*image.img[int(j), int(i)])
                 if inv_track.idx not in reconstruction.points:
-                    reconstruction.points[inv_track.idx] = reconstructed_point
+                    reconstruction.add_point(reconstructed_point)
                     added_new_points += 1
 
         LOGGER.info("Add new %d points", added_new_points)
@@ -488,23 +471,34 @@ class IncrementalSfM:
             )
             if image.pose is None:
                 continue
-            pose = gn_pnp(
-                image.K,
+
+            pose = gn_pose(
                 image.pose,
-                image_points,
-                world_points,
-                iterations=1000,
+                PoseParam(
+                    image.K,
+                    image_points,
+                    world_points,
+                ),
+                2000,
+                0.02,
             )
             image.pose = pose
 
-        LOGGER.info("refine the point")
-        for reconstructed_point in reconstruction.points.values():
-            new_point = non_linear(
-                reconstructed_point.poses(),
+        LOGGER.info("refine the points")
+        for reconstructed_point in tqdm(
+            reconstruction.points.values(),
+            total=len(reconstruction.points),
+        ):
+            new_point = gn_point(
                 reconstructed_point.loc.as_np(),
-                reconstructed_point.kp_camera(),
-                scaler=0.002,
-                max_iteration=100,
+                PointParam(
+                    [image.K for image in reconstructed_point.images()],
+                    reconstructed_point.kp_image(),
+                    reconstructed_point.poses(),
+                ),
+                iterations=100,
+                cost_threshold=0.02,
+                verbose=False,
             )
             reconstructed_point.loc.x = new_point[0]
             reconstructed_point.loc.y = new_point[1]
@@ -547,6 +541,8 @@ class IncrementalSfM:
                 "Refine triangulation using non-linear triangulation",
             )
             self._refine_non_linear(self.reconstructions[-1])
+
+        self._refine_non_linear(self.reconstructions[-1])
 
     @classmethod
     def from_config(

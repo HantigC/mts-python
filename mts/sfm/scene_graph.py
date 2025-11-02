@@ -9,14 +9,17 @@ import numpy as np
 
 from mts.estimator.pnp.dlt import compute_projection_error
 from mts.model.image import Image, ImageId, ImageType
+from mts.model.point import Point3D
+from mts.model.rgb import RGB
 from mts.model.track import (
     InvTrack,
     KeypointInvTrack,
+    KeypointTrack,
     TrackLocation,
 )
 from mts.model.two_view import PairId, TwoViewPair, image_ids_to_pair_id
-from mts.sfm.reconstruction import ReconstructedPoint
-from mts.types import NPVector3f
+
+from mts.types import Id, NPVector3f
 
 LOGGER = logging.getLogger("SfM")
 
@@ -33,6 +36,50 @@ class View3DPair(NamedTuple):
 
 
 @dataclass
+class ReconstructedPoint:
+    id: Id = field(default=None)
+    loc: Point3D = field(default=None)
+    color: RGB = field(default=None)
+    track: KeypointTrack = field(default=None)
+    error: float = field(default=np.inf)
+    scene_graph: SceneGraph = field(default=None, repr=False)
+
+    def poses(self, not_none: bool = True):
+        return [
+            tracklet.image.pose
+            for tracklet in self.track
+            if not not_none or tracklet.image.pose is not None
+        ]
+
+    def kp_image(self, not_none: bool = True):
+        return [
+            tracklet.image_kp
+            for tracklet in self.track
+            if not not_none or tracklet.image.pose is not None
+        ]
+
+    def images(self, not_none: bool = True):
+        return [
+            tracklet.image
+            for tracklet in self.track
+            if not not_none or tracklet.image.pose is not None
+        ]
+
+    def kp_camera(self, not_none: bool = True, homogenous: bool = False):
+        homogenous_slice = slice(None, -1)
+        if homogenous:
+            homogenous_slice = slice(None, 2)
+        if not_none:
+            return [
+                tracklet.camera_kp[homogenous_slice]
+                for tracklet in self.track
+                if tracklet.image.pose is not None
+            ]
+        if homogenous:
+            return [tracklet.camera_kp[homogenous_slice] for tracklet in self.track]
+
+
+@dataclass
 class SceneGraph:
     images: Dict[ImageId, Image]
     pairs: Optional[Dict[PairId, TwoViewPair]] = field(default_factory=dict)
@@ -46,7 +93,7 @@ class SceneGraph:
         init=False,
         default_factory=dict,
     )
-    _last_track_id: int = field(default=-1, init=False)
+    _last_point_id: int = field(default=-1, init=False)
 
     def __post_init__(self):
         for pair in self.pairs.values():
@@ -105,7 +152,9 @@ class SceneGraph:
         image_id = self._extract_image_id(image_id)
         return self.pairs_map[image_id]
 
-    def add_two_view_pair(self, two_view_pair: TwoViewPair, strict: bool = True) -> None:
+    def add_two_view_pair(
+        self, two_view_pair: TwoViewPair, strict: bool = True
+    ) -> None:
         if two_view_pair.pair_id in self.pairs and strict:
             raise ValueError(
                 f"pair id `{two_view_pair.pair_id}` already exists in the scene graph"
@@ -217,6 +266,7 @@ class SceneGraph:
             else:
                 if st_inv_track.idx == nd_inv_track.idx:
                     continue
+                # TODO: check for inconsistencies
                 self._merge_tracks(st_inv_track, nd_inv_track)
 
     def _create_track(
@@ -228,21 +278,43 @@ class SceneGraph:
         st_kp_mask,
         nd_kp_mask,
     ) -> None:
-        self._last_track_id += 1
+        self._last_point_id += 1
 
         reconstructed_point = ReconstructedPoint(
-            id=self._last_track_id,
+            id=self._last_point_id,
             track=[
                 TrackLocation(st_image, st_match),
                 TrackLocation(nd_image, nd_match),
             ],
             scene_graph=self,
         )
-        self.points[self._last_track_id] = reconstructed_point
-        st_kp_mask[st_match] = InvTrack(self._last_track_id, 0)
-        nd_kp_mask[nd_match] = InvTrack(self._last_track_id, 1)
+        self.points[self._last_point_id] = reconstructed_point
+        st_kp_mask[st_match] = InvTrack(self._last_point_id, 0)
+        nd_kp_mask[nd_match] = InvTrack(self._last_point_id, 1)
 
-    def _merge_tracks(self, st_inv_track: InvTrack, nd_inv_track: InvTrack) -> None:
+    def _can_merge(
+        self,
+        st_inv_track: InvTrack,
+        nd_inv_track: InvTrack,
+    ) -> bool:
+        st_image_tracks = {
+            tracklet.image.image_id: tracklet.keypoint_num
+            for tracklet in self.points[st_inv_track.idx].track
+        }
+        for tracklet in self.points[nd_inv_track.idx].track:
+            st_image_kp = st_image_tracks.get(tracklet.image.image_id)
+            if st_image_kp is not None:
+                if st_image_kp != tracklet.keypoint_num:
+                    return False
+        return True
+
+    def _merge_tracks(
+        self,
+        st_inv_track: InvTrack,
+        nd_inv_track: InvTrack,
+    ) -> None:
+        if not self._can_merge(st_inv_track, nd_inv_track):
+            return
         reconstructed_point = self.points.pop(nd_inv_track.idx)
         starting_len = len(self.points[st_inv_track.idx].track)
         for num, tracklet in enumerate(reconstructed_point.track, starting_len):

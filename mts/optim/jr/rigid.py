@@ -2,6 +2,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from mts.optim.jr.base import JacobianResiduals
+
 from ..gaussnewton import BaseJR, ToSecondOrderMixin
 
 from mts.pose.rigid import Rigid3D
@@ -28,7 +30,6 @@ class PoseJR(ToSecondOrderMixin, BaseJR[Rigid3D, PoseParam]):
             param.world_points,
         )
         cost = np.linalg.norm(residuals, axis=1).mean()
-        jacobians = jacobians.transpose(2, 0, 1)
         return jacobians, residuals, cost
 
     def update_term(
@@ -49,11 +50,11 @@ class _jr:
         pose: Rigid3D,
         image_points: np.ndarray,
         world_points: np.ndarray,
-    ):
+    ) -> JacobianResiduals:
         camera_points = pose * world_points
         return self.in_camera(K, image_points, camera_points)
 
-    def in_camera(self, K, image_points: np.ndarray, camera_points):
+    def in_camera(self, K, image_points: np.ndarray, camera_points,) -> JacobianResiduals:
         fx, fy = K[0, 0], K[1, 1]
         cx, cy = K[0, 2], K[1, 2]
 
@@ -94,7 +95,8 @@ class _jr:
             ]
         )
         es = image_points - projected_points
-        return js, es
+        js = js.transpose(2, 0, 1)
+        return JacobianResiduals(js, es)
 
 
 jr = _jr()

@@ -8,7 +8,6 @@ from tqdm.auto import tqdm
 
 from mts.geometry.transform import view_from_Rt
 from mts.geometry.triangulation import linear
-from mts.optim.jr.rigid import jr
 from mts.types import NPMatrix3x3f, NPMatrix4x4f, NPVector3f
 from mts.util.np import add_col
 
@@ -194,60 +193,59 @@ def compute_pose(E, st_points, nd_points):
     return best_R, best_t, best_point_3D, best_mask
 
 
-def gd_pnp(
-    K,
-    pose: Rigid3D,
-    image_points: np.ndarray,
-    world_points: np.ndarray,
-    iterations: int = 100,
-    learning_rate: float = 0.000001,
-    cost_th: float = 0.02,
-):
-    last_cost = np.inf
-    with tqdm(total=iterations) as tbar:
+# def gd_pnp(
+#     K,
+#     pose: Rigid3D,
+#     image_points: np.ndarray,
+#     world_points: np.ndarray,
+#     iterations: int = 100,
+#     learning_rate: float = 0.000001,
+#     cost_th: float = 0.02,
+# ):
+#     last_cost = np.inf
+#     with tqdm(total=iterations) as tbar:
 
-        for _ in range(iterations):
-            js, es = jr(K, pose, image_points, world_points)
-            dxs = -(js.transpose(2, 1, 0) @ es[:, :, np.newaxis]).squeeze()
-            dx = dxs.mean(0)
-            dx = learning_rate * dx
+#         for _ in range(iterations):
+#             js, es = jr(K, pose, image_points, world_points)
+#             dxs = -(js.transpose(2, 1, 0) @ es[:, :, np.newaxis]).squeeze()
+#             dx = dxs.mean(0)
+#             dx = learning_rate * dx
 
-            cost = np.linalg.norm(es, axis=1).mean()
-            if cost - cost_th > last_cost:
-                break
-            last_cost = cost
-            tbar.set_postfix({"cost": cost})
-            tbar.update()
+#             cost = np.linalg.norm(es, axis=1).mean()
+#             if cost - cost_th > last_cost:
+#                 break
+#             last_cost = cost
+#             tbar.set_postfix({"cost": cost})
+#             tbar.update()
 
-            pose = Rigid3D.Exp(dx) * pose
-    return pose
+#             pose = Rigid3D.Exp(dx) * pose
+#     return pose
 
 
-def gn_pnp(
-    K,
-    pose: Rigid3D,
-    image_points: np.ndarray,
-    world_points: np.ndarray,
-    iterations: int = 100,
-    cost_th: float = 0.02,
-):
-    last_cost = np.inf
-    with tqdm(total=iterations) as tbar:
-        for _ in range(iterations):
-            js, es = jr(K, pose, image_points, world_points)
-            Hs = js.transpose(2, 1, 0) @ js.transpose(2, 0, 1)
-            dxs = -(js.transpose(2, 1, 0) @ es[:, :, np.newaxis]).squeeze()
-            H = Hs.sum(0)
-            dx = dxs.sum(0)
-            dx = np.linalg.solve(H, dx)
-            cost = np.linalg.norm(es, axis=1).mean()
-            if cost - cost_th > last_cost:
-                break
-            last_cost = cost
+# def gn_pnp(
+#     K,
+#     pose: Rigid3D,
+#     image_points: np.ndarray,
+#     world_points: np.ndarray,
+#     iterations: int = 100,
+#     cost_th: float = 0.02,
+# ):
+#     last_cost = np.inf
+#     with tqdm(total=iterations) as tbar:
+#         for _ in range(iterations):
+#             js, es = jr(K, pose, image_points, world_points)
+#             Hs = js.transpose(2, 1, 0) @ js.transpose(2, 0, 1)
+#             dxs = -(js.transpose(2, 1, 0) @ es[:, :, np.newaxis]).squeeze()
+#             H = Hs.sum(0)
+#             dx = dxs.sum(0)
+#             dx = np.linalg.solve(H, dx)
+#             cost = np.linalg.norm(es, axis=1).mean()
+#             if cost - cost_th > last_cost:
+#                 break
+#             last_cost = cost
 
-            tbar.set_postfix({"cost": cost})
-            tbar.update()
+#             tbar.set_postfix({"cost": cost})
+#             tbar.update()
 
-            pose = Rigid3D.Exp(dx) * pose
-    return pose
-
+#             pose = Rigid3D.Exp(dx) * pose
+#     return pose
